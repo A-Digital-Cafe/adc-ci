@@ -7,7 +7,7 @@ un caller fino ([`templates/security.yml`](templates/security.yml)).
 
 > **Este repo debe ser PÚBLICO.** Un reusable workflow en repo privado no puede
 > ser invocado por repos públicos. El workflow no contiene secrets; se inyectan
-> en runtime vía `secrets: inherit`.
+> en runtime (el caller pasa solo los secrets SMTP requeridos en el job weekly).
 
 ## Qué corre
 
@@ -40,7 +40,7 @@ como **check**.
    "Accessible from repositories in the A-Digital-Cafe organization".
 3. **Política de Actions de la org**: Settings (org) → Actions → General → permitir
    actions de terceros usadas aquí, o pin por SHA (ya están pineadas).
-4. **Secrets de org** (para el email semanal; `secrets: inherit` los propaga):
+4. **Secrets de org** (para el email semanal; el caller los pasa explícitos en weekly):
    `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SECURITY_REPORT_TO`.
    Sin estos, el semanal corre igual pero omite el email.
 5. **En cada repo** (root + presets): copiar `templates/security.yml` a

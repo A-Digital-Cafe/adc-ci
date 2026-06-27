@@ -3,7 +3,8 @@
 #
 # Este repo (adc-ci) es PÚBLICO a propósito: un reusable workflow en repo privado
 # no puede ser invocado por repos públicos. El archivo no contiene secrets; estos
-# se inyectan en runtime desde cada repo vía `secrets: inherit`.
+# se inyectan en runtime desde cada repo (el caller pasa solo los 5 secrets SMTP
+# en el job weekly; pr/main no reciben secrets).
 #
 # Seguridad ante PRs de la comunidad (forks): el caller dispara en
 # `pull_request_review` (aprobado), que corre en contexto del repo BASE con el

@@ -1,0 +1,306 @@
+# Reusable workflow: suite de análisis estático centralizada para todos los
+# repos de A-Digital-Cafe (root + presets, públicos y privados).
+#
+# Este repo (adc-ci) es PÚBLICO a propósito: un reusable workflow en repo privado
+# no puede ser invocado por repos públicos. El archivo no contiene secrets; estos
+# se inyectan en runtime desde cada repo vía `secrets: inherit`.
+#
+# Seguridad ante PRs de la comunidad (forks): el caller dispara en
+# `pull_request_review` (aprobado), que corre en contexto del repo BASE con el
+# workflow del branch base (un PR no puede alterarlo). La suite es 100% estática
+# (Semgrep con reglas remotas, OSV y Trivy solo leen archivos); NUNCA se ejecuta
+# `install`/`build` del código del PR, así que no corre código no confiable.
+# El modo `pr` además no usa ningún secret (SMTP solo lo usa el modo `weekly`).
+#
+# Modos (input `mode`):
+#   pr     -> gate sobre PR aprobado: Semgrep + OSV (vulns/licencias) + Trivy (docker). Falla el check si hay hallazgos.
+#   main   -> tras merge a main: solo Scorecard (lo ya escaneado en el PR no se repite).
+#   weekly -> escaneo completo programado, report-only, + email de resumen.
+#
+# Requisitos de org (una sola vez): ver README.md de este repo.
+name: security-suite
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "pr | main | weekly"
+        required: true
+        type: string
+      email:
+        description: "Enviar resumen por email (solo modo weekly)"
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      SMTP_SERVER:
+        required: false
+      SMTP_PORT:
+        required: false
+      SMTP_USERNAME:
+        required: false
+      SMTP_PASSWORD:
+        required: false
+      SECURITY_REPORT_TO:
+        required: false
+
+# Licencias permitidas (alternativa libre a FOSSA, vía OSV-Scanner). Report-only.
+env:
+  ALLOWED_LICENSES: "MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,0BSD,Unlicense,CC0-1.0,MPL-2.0,Python-2.0,BlueOak-1.0.0"
+
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.r.outputs.ref }}
+      has_docker: ${{ steps.d.outputs.has_docker }}
+    steps:
+      - id: r
+        env:
+          MODE: ${{ inputs.mode }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          if [ "$MODE" = "pr" ]; then
+            echo "ref=$PR_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=$PUSH_SHA" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.r.outputs.ref }}
+          persist-credentials: false
+      - id: d
+        name: Detectar Dockerfiles / docker-compose
+        run: |
+          if find . -path ./node_modules -prune -o \
+               \( -iname 'Dockerfile' -o -iname 'Dockerfile.*' \
+                  -o -iname 'docker-compose*.y*ml' -o -iname 'compose.y*ml' \) -print \
+             | grep -q .; then
+            echo "has_docker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_docker=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # --------------------------------------------------------------------------
+  semgrep:
+    needs: detect
+    if: ${{ inputs.mode == 'pr' || inputs.mode == 'weekly' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.detect.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar Semgrep
+        run: python -m pip install --no-cache-dir semgrep
+      - name: Semgrep scan
+        run: |
+          semgrep scan --config auto --metrics off \
+            --sarif --output semgrep.sarif \
+            --json --output semgrep.json || true
+      - name: Resumen
+        id: sum
+        run: |
+          COUNT=$(jq '.results | length' semgrep.json 2>/dev/null || echo 0)
+          {
+            echo "## 🔎 Semgrep"
+            echo ""
+            echo "**Hallazgos:** $COUNT"
+            echo ""
+            if [ "$COUNT" -gt 0 ]; then
+              echo "| Severidad | Regla | Archivo:Línea |"
+              echo "| --- | --- | --- |"
+              jq -r '.results[] | "| \(.extra.severity) | \(.check_id) | \(.path):\(.start.line) |"' semgrep.json | head -50
+            else
+              echo "_Sin hallazgos._"
+            fi
+          } | tee semgrep-summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: summary-semgrep
+          path: semgrep-summary.md
+      - name: Gate (solo PR)
+        if: ${{ inputs.mode == 'pr' && steps.sum.outputs.count != '0' }}
+        run: |
+          echo "::error::Semgrep encontró ${{ steps.sum.outputs.count }} hallazgo(s)."
+          exit 1
+
+  # --------------------------------------------------------------------------
+  osv:
+    needs: detect
+    if: ${{ inputs.mode == 'pr' || inputs.mode == 'weekly' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.detect.outputs.ref }}
+          persist-credentials: false
+      - name: Instalar OSV-Scanner
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL -o /usr/local/bin/osv-scanner \
+            https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64
+          chmod +x /usr/local/bin/osv-scanner
+      - name: Escaneo de vulnerabilidades
+        run: osv-scanner scan source -r --format json --output osv.json . || true
+      - name: Escaneo de licencias (report-only)
+        run: osv-scanner scan source -r --licenses="$ALLOWED_LICENSES" --format json --output osv-lic.json . || true
+      - name: Resumen
+        id: sum
+        run: |
+          VULNS=$(jq '[.results[].packages[].vulnerabilities[]?] | length' osv.json 2>/dev/null || echo 0)
+          LIC=$(jq '[.results[].packages[].license_violations[]?] | length' osv-lic.json 2>/dev/null || echo 0)
+          {
+            echo "## 📦 OSV-Scanner (vulns + licencias)"
+            echo ""
+            echo "**Vulnerabilidades:** $VULNS · **Violaciones de licencia:** $LIC"
+            echo ""
+            if [ "$VULNS" -gt 0 ]; then
+              echo "| Paquete | ID | Severidad |"
+              echo "| --- | --- | --- |"
+              jq -r '.results[].packages[] | select(.vulnerabilities) | .package.name as $p | .vulnerabilities[] | "| \($p) | \(.id) | \((.database_specific.severity // "n/a")) |"' osv.json 2>/dev/null | head -50
+            else
+              echo "_Sin vulnerabilidades conocidas._"
+            fi
+          } | tee osv-summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "vulns=$VULNS" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: summary-osv
+          path: osv-summary.md
+      - name: Gate (solo PR)
+        if: ${{ inputs.mode == 'pr' && steps.sum.outputs.vulns != '0' }}
+        run: |
+          echo "::error::OSV encontró ${{ steps.sum.outputs.vulns }} vulnerabilidad(es)."
+          exit 1
+
+  # --------------------------------------------------------------------------
+  trivy:
+    needs: detect
+    if: ${{ (inputs.mode == 'pr' || inputs.mode == 'weekly') && needs.detect.outputs.has_docker == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.detect.outputs.ref }}
+          persist-credentials: false
+      - name: Trivy config (Dockerfiles / docker-compose)
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: json
+          output: trivy.json
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+      - name: Resumen
+        id: sum
+        run: |
+          MIS=$(jq '[.Results[].Misconfigurations[]?] | length' trivy.json 2>/dev/null || echo 0)
+          {
+            echo "## 🐳 Trivy (config Docker)"
+            echo ""
+            echo "**Misconfiguraciones HIGH/CRITICAL:** $MIS"
+            echo ""
+            if [ "$MIS" -gt 0 ]; then
+              echo "| Severidad | ID | Archivo | Descripción |"
+              echo "| --- | --- | --- | --- |"
+              jq -r '.Results[] | .Target as $t | (.Misconfigurations[]? | "| \(.Severity) | \(.ID) | \($t) | \(.Title) |")' trivy.json 2>/dev/null | head -50
+            else
+              echo "_Sin misconfiguraciones HIGH/CRITICAL._"
+            fi
+          } | tee trivy-summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "mis=$MIS" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: summary-trivy
+          path: trivy-summary.md
+      - name: Gate (solo PR)
+        if: ${{ inputs.mode == 'pr' && steps.sum.outputs.mis != '0' }}
+        run: |
+          echo "::error::Trivy encontró ${{ steps.sum.outputs.mis }} misconfiguración(es) HIGH/CRITICAL."
+          exit 1
+
+  # --------------------------------------------------------------------------
+  scorecard:
+    needs: detect
+    if: ${{ inputs.mode == 'main' || inputs.mode == 'weekly' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.detect.outputs.ref }}
+          persist-credentials: false
+      - name: OSSF Scorecard
+        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46 # v2.4.0
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: false
+      - name: Resumen
+        run: |
+          {
+            echo "## 🛡️ OSSF Scorecard"
+            echo ""
+            if [ -f scorecard.sarif ]; then
+              jq -r '.runs[0].tool.driver.rules[]? | "- \(.name): \(.shortDescription.text)"' scorecard.sarif 2>/dev/null | head -40
+            else
+              echo "_Scorecard no produjo resultados._"
+            fi
+          } | tee scorecard-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: summary-scorecard
+          path: scorecard-summary.md
+
+  # --------------------------------------------------------------------------
+  report-email:
+    needs: [semgrep, osv, trivy, scorecard]
+    if: ${{ always() && inputs.mode == 'weekly' && inputs.email }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: summaries
+          pattern: summary-*
+          merge-multiple: true
+      - name: Construir cuerpo del email
+        run: |
+          {
+            echo "# Reporte semanal de seguridad — ${{ github.repository }}"
+            echo ""
+            echo "_Generado el $(date -u '+%Y-%m-%d %H:%M UTC') · run [#${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_"
+            echo ""
+            for f in summaries/*.md; do [ -f "$f" ] && cat "$f" && echo ""; done
+          } > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: ¿Hay SMTP configurado?
+        id: smtp
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+        run: |
+          if [ -n "$SMTP_SERVER" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Enviar email
+        if: ${{ steps.smtp.outputs.ok == 'true' }}
+        uses: dawidd6/action-send-mail@4226df7daafa6fc901a43789c49bf7ab309066e7 # v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "[ADC][security] Reporte semanal — ${{ github.repository }}"
+          to: ${{ secrets.SECURITY_REPORT_TO }}
+          from: "ADC Security CI <${{ secrets.SMTP_USERNAME }}>"
+          convert_markdown: true
+          html_body: file://report.md

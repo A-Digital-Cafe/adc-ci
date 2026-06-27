@@ -14,8 +14,14 @@
 #
 # Modos (input `mode`):
 #   pr     -> gate sobre PR aprobado: Semgrep + OSV (vulns/licencias) + Trivy (docker). Falla el check si hay hallazgos.
-#   main   -> tras merge a main: solo Scorecard (lo ya escaneado en el PR no se repite).
-#   weekly -> escaneo completo programado, report-only, + email de resumen.
+#   main   -> push a main (incluye push directo): mismo gate Semgrep+OSV+Trivy, PERO
+#             se omite si el commit ya se escaneó en su PR (dedup por SHA vía cache).
+#   weekly -> escaneo completo + OSSF Scorecard, report-only, + email de resumen.
+#
+# Dedup: cada scan limpio guarda un marcador en cache `scanned-<sha>`. En push a
+# main, si el commit es un merge cuyo 2º padre (head del PR) ya está marcado, se
+# omite. Limitación: solo aplica a merge commits; squash/rebase generan SHAs
+# nuevos y se re-escanean (fail-open hacia escanear).
 #
 # Requisitos de org (una sola vez): ver README.md de este repo.
 name: security-suite
@@ -58,6 +64,7 @@ jobs:
     outputs:
       ref: ${{ steps.r.outputs.ref }}
       has_docker: ${{ steps.d.outputs.has_docker }}
+      skip_scan: ${{ steps.skip.outputs.skip_scan }}
     steps:
       - id: r
         env:
@@ -73,7 +80,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.r.outputs.ref }}
+          fetch-depth: 2 # necesario para resolver HEAD^2 (head del PR mergeado)
           persist-credentials: false
+      # --- Dedup (solo push a main): ¿este commit ya se escaneó en su PR? ---
+      # Si es un merge commit, su 2º padre (HEAD^2) es el head del PR ya escaneado.
+      - id: dedup
+        if: ${{ inputs.mode == 'main' }}
+        run: |
+          PR_HEAD=$(git rev-parse HEAD^2 2>/dev/null || echo "")
+          echo "pr_head=$PR_HEAD" >> "$GITHUB_OUTPUT"
+      - id: cache_head
+        if: ${{ inputs.mode == 'main' && steps.dedup.outputs.pr_head != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .scan-marker
+          key: scanned-${{ steps.dedup.outputs.pr_head }}
+          lookup-only: true
+      - id: skip
+        run: |
+          if [ "${{ steps.cache_head.outputs.cache-hit }}" = "true" ]; then
+            echo "skip_scan=true" >> "$GITHUB_OUTPUT"
+            echo "Commit ya escaneado en su PR (${{ steps.dedup.outputs.pr_head }}); se omite re-escaneo." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "skip_scan=false" >> "$GITHUB_OUTPUT"
+          fi
       - id: d
         name: Detectar Dockerfiles / docker-compose
         run: |
@@ -89,7 +119,7 @@ jobs:
   # --------------------------------------------------------------------------
   semgrep:
     needs: detect
-    if: ${{ inputs.mode == 'pr' || inputs.mode == 'weekly' }}
+    if: ${{ inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -128,8 +158,8 @@ jobs:
         with:
           name: summary-semgrep
           path: semgrep-summary.md
-      - name: Gate (solo PR)
-        if: ${{ inputs.mode == 'pr' && steps.sum.outputs.count != '0' }}
+      - name: Gate (PR y push a main)
+        if: ${{ inputs.mode != 'weekly' && steps.sum.outputs.count != '0' }}
         run: |
           echo "::error::Semgrep encontró ${{ steps.sum.outputs.count }} hallazgo(s)."
           exit 1
@@ -137,7 +167,7 @@ jobs:
   # --------------------------------------------------------------------------
   osv:
     needs: detect
-    if: ${{ inputs.mode == 'pr' || inputs.mode == 'weekly' }}
+    if: ${{ inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -176,8 +206,8 @@ jobs:
         with:
           name: summary-osv
           path: osv-summary.md
-      - name: Gate (solo PR)
-        if: ${{ inputs.mode == 'pr' && steps.sum.outputs.vulns != '0' }}
+      - name: Gate (PR y push a main)
+        if: ${{ inputs.mode != 'weekly' && steps.sum.outputs.vulns != '0' }}
         run: |
           echo "::error::OSV encontró ${{ steps.sum.outputs.vulns }} vulnerabilidad(es)."
           exit 1
@@ -185,7 +215,7 @@ jobs:
   # --------------------------------------------------------------------------
   trivy:
     needs: detect
-    if: ${{ (inputs.mode == 'pr' || inputs.mode == 'weekly') && needs.detect.outputs.has_docker == 'true' }}
+    if: ${{ needs.detect.outputs.has_docker == 'true' && (inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -223,8 +253,8 @@ jobs:
         with:
           name: summary-trivy
           path: trivy-summary.md
-      - name: Gate (solo PR)
-        if: ${{ inputs.mode == 'pr' && steps.sum.outputs.mis != '0' }}
+      - name: Gate (PR y push a main)
+        if: ${{ inputs.mode != 'weekly' && steps.sum.outputs.mis != '0' }}
         run: |
           echo "::error::Trivy encontró ${{ steps.sum.outputs.mis }} misconfiguración(es) HIGH/CRITICAL."
           exit 1
@@ -232,7 +262,7 @@ jobs:
   # --------------------------------------------------------------------------
   scorecard:
     needs: detect
-    if: ${{ inputs.mode == 'main' || inputs.mode == 'weekly' }}
+    if: ${{ inputs.mode == 'weekly' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -263,6 +293,31 @@ jobs:
         with:
           name: summary-scorecard
           path: scorecard-summary.md
+
+  # --------------------------------------------------------------------------
+  # Registra el SHA escaneado (solo si pasó sin hallazgos) para que el push a
+  # main posterior no re-escanee lo ya cubierto por su PR. Cache scope = main
+  # (pull_request_review corre en contexto del branch base).
+  record-scanned:
+    needs: [detect, semgrep, osv, trivy]
+    if: >-
+      ${{ always()
+          && (inputs.mode == 'pr' || inputs.mode == 'main')
+          && needs.detect.outputs.skip_scan != 'true'
+          && needs.semgrep.result == 'success'
+          && needs.osv.result == 'success'
+          && (needs.trivy.result == 'success' || needs.trivy.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Crear marcador
+        env:
+          REF: ${{ needs.detect.outputs.ref }}
+        run: echo "$REF scanned $(date -u +%FT%TZ)" > .scan-marker
+      - uses: actions/cache/save@v4
+        continue-on-error: true # no falla si la clave ya existe
+        with:
+          path: .scan-marker
+          key: scanned-${{ needs.detect.outputs.ref }}
 
   # --------------------------------------------------------------------------
   report-email:

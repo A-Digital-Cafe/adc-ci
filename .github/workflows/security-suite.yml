@@ -53,7 +53,7 @@ on:
 
 # Licencias permitidas (alternativa libre a FOSSA, vía OSV-Scanner). Report-only.
 env:
-  ALLOWED_LICENSES: "MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,0BSD,Unlicense,CC0-1.0,MPL-2.0,Python-2.0,BlueOak-1.0.0"
+  ALLOWED_LICENSES: "MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,0BSD,Unlicense,CC0-1.0,MPL-2.0,Python-2.0,BlueOak-1.0.0,MIT-0,CC-BY-4.0,MulanPSL-2.0,LGPL-3.0-or-later"
 
 permissions:
   contents: read
@@ -188,7 +188,9 @@ jobs:
         id: sum
         run: |
           VULNS=$(jq '[.results[].packages[].vulnerabilities[]?] | length' osv.json 2>/dev/null || echo 0)
-          LIC=$(jq '[.results[].packages[].license_violations[]?] | length' osv-lic.json 2>/dev/null || echo 0)
+          # Excluye paquetes first-party (workspaces, version "workspace:..."): no son
+          # dependencias de terceros y OSV no puede leer su license del package.json local.
+          LIC=$(jq '[.results[].packages[] | select((.package.version // "") | startswith("workspace:") | not) | .license_violations[]?] | length' osv-lic.json 2>/dev/null || echo 0)
           {
             echo "## 📦 OSV-Scanner (vulns + licencias)"
             echo ""

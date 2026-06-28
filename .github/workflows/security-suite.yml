@@ -223,8 +223,14 @@ jobs:
         with:
           ref: ${{ needs.detect.outputs.ref }}
           persist-credentials: false
+      # El trivy-action v0.28.0 invocaba internamente setup-trivy@v0.2.1 (tag ya
+      # removido por aquasecurity) y fallaba. Instalamos Trivy con setup-trivy
+      # v0.3.1 fijado por SHA y subimos trivy-action a v0.36.0, que soporta
+      # skip-setup-trivy para reutilizar el binario ya instalado.
+      - name: Setup Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
       - name: Trivy config (Dockerfiles / docker-compose)
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
           scan-ref: .
@@ -232,6 +238,7 @@ jobs:
           output: trivy.json
           severity: HIGH,CRITICAL
           exit-code: "0"
+          skip-setup-trivy: true
       - name: Resumen
         id: sum
         run: |

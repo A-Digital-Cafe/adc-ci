@@ -78,7 +78,7 @@ jobs:
           else
             echo "ref=$PUSH_SHA" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ steps.r.outputs.ref }}
           fetch-depth: 2 # necesario para resolver HEAD^2 (head del PR mergeado)
@@ -92,7 +92,7 @@ jobs:
           echo "pr_head=$PR_HEAD" >> "$GITHUB_OUTPUT"
       - id: cache_head
         if: ${{ inputs.mode == 'main' && steps.dedup.outputs.pr_head != '' }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .scan-marker
           key: scanned-${{ steps.dedup.outputs.pr_head }}
@@ -123,11 +123,11 @@ jobs:
     if: ${{ inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.detect.outputs.ref }}
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Instalar Semgrep
@@ -155,7 +155,7 @@ jobs:
             fi
           } | tee semgrep-summary.md >> "$GITHUB_STEP_SUMMARY"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: summary-semgrep
           path: semgrep-summary.md
@@ -171,7 +171,7 @@ jobs:
     if: ${{ inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.detect.outputs.ref }}
           persist-credentials: false
@@ -203,7 +203,7 @@ jobs:
             fi
           } | tee osv-summary.md >> "$GITHUB_STEP_SUMMARY"
           echo "vulns=$VULNS" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: summary-osv
           path: osv-summary.md
@@ -219,7 +219,7 @@ jobs:
     if: ${{ needs.detect.outputs.has_docker == 'true' && (inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true')) }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.detect.outputs.ref }}
           persist-credentials: false
@@ -257,7 +257,7 @@ jobs:
             fi
           } | tee trivy-summary.md >> "$GITHUB_STEP_SUMMARY"
           echo "mis=$MIS" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: summary-trivy
           path: trivy-summary.md
@@ -276,7 +276,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.detect.outputs.ref }}
           persist-credentials: false
@@ -297,7 +297,7 @@ jobs:
               echo "_Scorecard no produjo resultados._"
             fi
           } | tee scorecard-summary.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: summary-scorecard
           path: scorecard-summary.md
@@ -321,7 +321,7 @@ jobs:
         env:
           REF: ${{ needs.detect.outputs.ref }}
         run: echo "$REF scanned $(date -u +%FT%TZ)" > .scan-marker
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         continue-on-error: true # no falla si la clave ya existe
         with:
           path: .scan-marker
@@ -333,7 +333,7 @@ jobs:
     if: ${{ always() && inputs.mode == 'weekly' && inputs.email }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: summaries
           pattern: summary-*

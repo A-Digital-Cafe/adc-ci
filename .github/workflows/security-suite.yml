@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      only:
+        description: "Ejecutar solo un job: all | semgrep | osv | trivy | scorecard (default all)"
+        required: false
+        default: all
+        type: string
     secrets:
       SMTP_SERVER:
         required: false
@@ -120,7 +125,7 @@ jobs:
   # --------------------------------------------------------------------------
   semgrep:
     needs: detect
-    if: ${{ inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true') }}
+    if: ${{ inputs.only == 'semgrep' || (inputs.only == 'all' && (inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true'))) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -168,7 +173,7 @@ jobs:
   # --------------------------------------------------------------------------
   osv:
     needs: detect
-    if: ${{ inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true') }}
+    if: ${{ inputs.only == 'osv' || (inputs.only == 'all' && (inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true'))) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -218,7 +223,7 @@ jobs:
   # --------------------------------------------------------------------------
   trivy:
     needs: detect
-    if: ${{ needs.detect.outputs.has_docker == 'true' && (inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true')) }}
+    if: ${{ needs.detect.outputs.has_docker == 'true' && (inputs.only == 'trivy' || (inputs.only == 'all' && (inputs.mode == 'weekly' || inputs.mode == 'pr' || (inputs.mode == 'main' && needs.detect.outputs.skip_scan != 'true')))) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -272,7 +277,7 @@ jobs:
   # --------------------------------------------------------------------------
   scorecard:
     needs: detect
-    if: ${{ inputs.mode == 'weekly' }}
+    if: ${{ inputs.only == 'scorecard' || (inputs.only == 'all' && inputs.mode == 'weekly') }}
     runs-on: ubuntu-latest
     # En repos PRIVADOS, la query GraphQL ListCommits de Scorecard y su detección
     # de SAST necesitan scopes de lectura extra además de contents+id-token; sin
@@ -322,6 +327,7 @@ jobs:
     needs: [detect, semgrep, osv, trivy]
     if: >-
       ${{ always()
+          && inputs.only == 'all'
           && (inputs.mode == 'pr' || inputs.mode == 'main')
           && needs.detect.outputs.skip_scan != 'true'
           && needs.semgrep.result == 'success'

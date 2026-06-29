@@ -24,13 +24,20 @@ un caller fino ([`templates/security.yml`](templates/security.yml)).
 - **PR aprobado** (`pull_request_review` = approved) → modo `pr`: Semgrep + OSV +
   Trivy como **gate** (el check falla si hay hallazgos). Corre en contexto del
   repo base, así que es seguro ante PRs de la comunidad (forks).
-- **Push a main** → modo `main`: solo Scorecard (evita re-escanear lo ya visto en
-  el PR aprobado).
-- **Semanal** (lunes 06:00 UTC) → modo `weekly`: suite completa report-only +
-  email.
+- **Periódico** (cron cada 4 días, 06:00 UTC) → modo `weekly`: suite completa +
+  OSSF Scorecard, report-only + email.
+- **Manual** (`workflow_dispatch` desde la pestaña Actions → "Run workflow") →
+  modo elegible (`weekly`/`pr`/`main`, default `weekly`): corre la suite on-demand.
 
 Todos los modos escriben al **Job Summary** del run y, en PR, cada job aparece
 como **check**.
+
+> **Repos privados:** la query GraphQL `ListCommits` de Scorecard y su detección
+> de SAST necesitan scopes de lectura extra (`actions`, `checks`, `issues`,
+> `pull-requests`) además de `contents`+`id-token`. Como el caller solo puede
+> acotar el token del reusable, esos scopes se conceden en **ambos** lados (job
+> `scorecard` del reusable y jobs `scheduled`/`manual` del caller).
+> Ref: <https://github.com/ossf/scorecard-action/issues/1248>.
 
 ## Setup (una sola vez)
 

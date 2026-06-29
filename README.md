@@ -27,7 +27,9 @@ un caller fino ([`templates/security.yml`](templates/security.yml)).
 - **Periódico** (cron cada 4 días, 06:00 UTC) → modo `weekly`: suite completa +
   OSSF Scorecard, report-only + email.
 - **Manual** (`workflow_dispatch` desde la pestaña Actions → "Run workflow") →
-  modo elegible (`weekly`/`pr`/`main`, default `weekly`): corre la suite on-demand.
+  modo elegible (`weekly`/`pr`/`main`, default `weekly`) + input `only`
+  (`all`/`semgrep`/`osv`/`trivy`/`scorecard`) para correr **un solo job**
+  on-demand (ej. solo Scorecard).
 
 Todos los modos escriben al **Job Summary** del run y, en PR, cada job aparece
 como **check**.

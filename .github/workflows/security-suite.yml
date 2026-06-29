@@ -300,16 +300,29 @@ jobs:
       - name: OSSF Scorecard
         uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46 # v2.4.0
         with:
-          results_file: scorecard.sarif
-          results_format: sarif
+          # JSON (no SARIF): trae score 0-10, `reason` (porqué) y `documentation.url`
+          # (cómo mejorar) por check; el SARIF no incluye los puntajes.
+          results_file: scorecard.json
+          results_format: json
           publish_results: false
       - name: Resumen
         run: |
           {
             echo "## 🛡️ OSSF Scorecard"
             echo ""
-            if [ -f scorecard.sarif ]; then
-              jq -r '.runs[0].tool.driver.rules[]? | "- \(.name): \(.shortDescription.text)"' scorecard.sarif 2>/dev/null | head -40
+            if [ -s scorecard.json ]; then
+              echo "**Score global:** $(jq -r '.score // "n/a"' scorecard.json)/10"
+              echo ""
+              echo "| Check | Score |"
+              echo "| --- | --- |"
+              jq -r '.checks[]? | "| \(.name) | \(if (.score // -1) < 0 then "n/a" else (.score|tostring) end)/10 |"' scorecard.json 2>/dev/null
+              echo ""
+              echo "### Recomendaciones (checks con score < 7)"
+              REC=$(jq -r '.checks[]?
+                | select((.score // 10) >= 0 and (.score // 10) < 7)
+                | "- **\(.name)** (\(.score)/10): \((.reason // "—") | gsub("[\r\n]";" ")) — [cómo mejorar](\(.documentation.url // ""))"' \
+                scorecard.json 2>/dev/null)
+              if [ -n "$REC" ]; then echo "$REC"; else echo "_Sin recomendaciones: todos los checks con score ≥ 7._"; fi
             else
               echo "_Scorecard no produjo resultados._"
             fi
@@ -347,7 +360,8 @@ jobs:
 
   # --------------------------------------------------------------------------
   report-email:
-    needs: [semgrep, osv, trivy, scorecard]
+    needs: [detect, semgrep, osv, trivy, scorecard]
+    # always() => el mail se envía aunque algún job falle (notificación de fallo).
     if: ${{ always() && inputs.mode == 'weekly' && inputs.email }}
     runs-on: ubuntu-latest
     steps:
@@ -356,12 +370,36 @@ jobs:
           path: summaries
           pattern: summary-*
           merge-multiple: true
+      - name: Estado de los jobs
+        id: st
+        env:
+          R_DETECT: ${{ needs.detect.result }}
+          R_SEMGREP: ${{ needs.semgrep.result }}
+          R_OSV: ${{ needs.osv.result }}
+          R_TRIVY: ${{ needs.trivy.result }}
+          R_SCORECARD: ${{ needs.scorecard.result }}
+        run: |
+          # 'skipped' es legítimo (only=<job> o trivy sin docker); solo
+          # failure/cancelled marcan fallo de la suite.
+          failed=false
+          for r in "$R_DETECT" "$R_SEMGREP" "$R_OSV" "$R_TRIVY" "$R_SCORECARD"; do
+            case "$r" in failure | cancelled) failed=true ;; esac
+          done
+          if $failed; then echo "badge=❌ FALLÓ" >> "$GITHUB_OUTPUT"; else echo "badge=✅ OK" >> "$GITHUB_OUTPUT"; fi
       - name: Construir cuerpo del email
         run: |
           {
-            echo "# Reporte semanal de seguridad — ${{ github.repository }}"
+            echo "# Reporte de seguridad — ${{ github.repository }}"
             echo ""
-            echo "_Generado el $(date -u '+%Y-%m-%d %H:%M UTC') · run [#${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_"
+            echo "**Estado:** ${{ steps.st.outputs.badge }} · _$(date -u '+%Y-%m-%d %H:%M UTC')_ · run [#${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo ""
+            echo "| Job | Resultado |"
+            echo "| --- | --- |"
+            echo "| detect | ${{ needs.detect.result }} |"
+            echo "| semgrep | ${{ needs.semgrep.result }} |"
+            echo "| osv | ${{ needs.osv.result }} |"
+            echo "| trivy | ${{ needs.trivy.result }} |"
+            echo "| scorecard | ${{ needs.scorecard.result }} |"
             echo ""
             for f in summaries/*.md; do [ -f "$f" ] && cat "$f" && echo ""; done
           } > report.md
@@ -380,7 +418,7 @@ jobs:
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "[ADC][security] Reporte semanal — ${{ github.repository }}"
+          subject: "[ADC][security] ${{ steps.st.outputs.badge }} — ${{ github.repository }}"
           to: ${{ secrets.SECURITY_REPORT_TO }}
           from: "ADC Security CI <${{ secrets.SMTP_USERNAME }}>"
           convert_markdown: true

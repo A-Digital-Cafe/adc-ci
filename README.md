@@ -16,8 +16,8 @@ un caller fino ([`templates/security.yml`](templates/security.yml)).
 | **Semgrep** (`--config auto`) | SAST estático | PR aprobado · semanal |
 | **OSV-Scanner** | Vulns de dependencias + **licencias** (alternativa libre a FOSSA) | PR aprobado · semanal |
 | **Trivy** (`config`) | Misconfig de Dockerfiles / docker-compose (solo si el repo tiene) | PR aprobado · semanal |
-| **OSSF Scorecard** | Prácticas de seguridad del repo | push a main · semanal |
-| **Email** | Resumen semanal por mail | semanal |
+| **OSSF Scorecard** | Prácticas de seguridad del repo (score 0-10 + recomendaciones por check) | semanal · manual |
+| **Email** | Resumen por mail; se envía **aunque la suite falle** (asunto ✅ OK / ❌ FALLÓ + estado por job) | semanal · manual |
 
 ### Modos / triggers (definidos en el caller)
 
@@ -27,9 +27,9 @@ un caller fino ([`templates/security.yml`](templates/security.yml)).
 - **Periódico** (cron cada 4 días, 06:00 UTC) → modo `weekly`: suite completa +
   OSSF Scorecard, report-only + email.
 - **Manual** (`workflow_dispatch` desde la pestaña Actions → "Run workflow") →
-  modo elegible (`weekly`/`pr`/`main`, default `weekly`) + input `only`
-  (`all`/`semgrep`/`osv`/`trivy`/`scorecard`) para correr **un solo job**
-  on-demand (ej. solo Scorecard).
+  report-only; elegís **qué job** correr con `only`
+  (`all`/`scorecard`/`semgrep`/`osv`/`trivy`) y, opcional, `email`. Sin selector
+  de modo: el manual siempre es report-only (no gatea).
 
 Todos los modos escriben al **Job Summary** del run y, en PR, cada job aparece
 como **check**.

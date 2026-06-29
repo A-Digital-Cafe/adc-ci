@@ -274,9 +274,19 @@ jobs:
     needs: detect
     if: ${{ inputs.mode == 'weekly' }}
     runs-on: ubuntu-latest
+    # OSSF Scorecard hace consultas GraphQL (ListCommits) y detecta SAST: en repos
+    # PRIVADOS el GITHUB_TOKEN necesita estos scopes de lectura, además de
+    # contents/id-token. Sin issues+pull-requests falla con:
+    #   ListCommits: ... githubv4.Query: Resource not accessible by integration
+    # checks+actions son necesarios para la detección de SAST. Estos permisos solo
+    # surten efecto si el caller también los concede al token (ver templates/security.yml).
     permissions:
       contents: read
       id-token: write
+      actions: read
+      issues: read
+      pull-requests: read
+      checks: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

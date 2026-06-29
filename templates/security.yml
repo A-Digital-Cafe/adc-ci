@@ -14,9 +14,11 @@ on:
   schedule:
     - cron: "0 6 */4 * *"
 
+# Permisos mínimos por defecto (modo pr solo necesita leer contenido). El token
+# de un caller solo puede ACOTAR los permisos del reusable, nunca ampliarlos: por
+# eso los scopes extra de Scorecard se conceden aquí, en el job `scheduled`.
 permissions:
   contents: read
-  id-token: write # requerido por OSSF Scorecard
 
 jobs:
   pr:
@@ -30,6 +32,16 @@ jobs:
   # reusable omite el email.
   scheduled:
     if: ${{ github.event_name == 'schedule' }}
+    # OSSF Scorecard (modo weekly) necesita estos scopes de lectura para su consulta
+    # GraphQL ListCommits y la detección de SAST en repos PRIVADOS; id-token para
+    # OIDC. Sin issues+pull-requests: "Resource not accessible by integration".
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+      issues: read
+      pull-requests: read
+      checks: read
     uses: A-Digital-Cafe/adc-ci/.github/workflows/security-suite.yml@68ee89fe6c31aa59e847f1f2de320d7da4e5e0fa # main
     with:
       mode: weekly
